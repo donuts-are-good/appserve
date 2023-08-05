@@ -78,7 +78,7 @@ func Handler(routes map[string]*Proxy, mu *sync.RWMutex) http.HandlerFunc {
 
 		domain := r.Host
 		if route, found := routes[domain]; found {
-			fmt.Println("hit: ", route)
+			fmt.Println("hit: ", domain, routes[domain])
 			route.Proxy.ServeHTTP(w, r)
 		} else {
 			http.Error(w, "Not found", http.StatusNotFound)
