@@ -24,6 +24,7 @@ type Proxy struct {
 }
 
 func LoadRoutes(file string) (map[string]*Proxy, error) {
+	log.Println("Loading routes: " + file)
 	f, err := os.Open(file)
 	if err != nil {
 		return nil, err
@@ -38,8 +39,10 @@ func LoadRoutes(file string) (map[string]*Proxy, error) {
 
 	rp := make(map[string]*Proxy)
 	for _, route := range routes {
+		log.Println("-> route found: " + route.Domain + ":" + route.Port)
 		target, err := url.Parse("http://localhost:" + route.Port)
 		if err != nil {
+			log.Println("error: " + err.Error())
 			return nil, err
 		}
 		rp[route.Domain] = &Proxy{
@@ -57,6 +60,7 @@ func SaveRoutes(file string, routes map[string]*Proxy) error {
 		drs = append(drs, DomainRoute{Domain: domain, Port: proxy.Port})
 	}
 
+	log.Println("updating routes.json...")
 	f, err := os.Create(file)
 	if err != nil {
 		return err
@@ -74,6 +78,7 @@ func Handler(routes map[string]*Proxy, mu *sync.RWMutex) http.HandlerFunc {
 
 		domain := r.Host
 		if route, found := routes[domain]; found {
+			fmt.Println("hit: ", route)
 			route.Proxy.ServeHTTP(w, r)
 		} else {
 			http.Error(w, "Not found", http.StatusNotFound)
@@ -112,6 +117,7 @@ func main() {
 
 	var mu sync.RWMutex
 
+	log.Println("routes loaded!")
 	if *newDomain != "" && *newPort != "" {
 		if err := NewRoute(routes, *newDomain, *newPort); err != nil {
 			log.Fatal(err)
@@ -120,12 +126,12 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Println("Added new route")
+		fmt.Println("added new route")
 		return
 	}
 
 	http.HandleFunc("/", Handler(routes, &mu))
 	if err := http.ListenAndServe(":80", nil); err != nil {
-		log.Fatal(err)
+		log.Println(err)
 	}
 }
