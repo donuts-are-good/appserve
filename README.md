@@ -10,19 +10,46 @@ appserve is a reverse proxy server in go. it routes requests based on domain to 
 ```$ ./appserve```
 
 appserve reads routes from `routes.json`.
+## interactive shell
 
-### adding routes
+upon starting, appserve provides an interactive shell with several commands:
 
-to add a new route:
+- `list`: display all of the domain-port mappings.
 
-```$ ./appserve -new example.com -port 9000```
+- `add <domain> <port>`: add a mapping for the domain to the specified port.
 
-this command routes example.com to port 9000. the route is saved to routes.json.
-configuration
+- `remove <domain>`: remove the mapping for the specified domain.
+
+- `save`: save the routes to the current routes.json file.
+
+- `load`: load routes from the current routes.json file.
+
+- `help`: display the help menu.
+
+- `exit`: exit the application.
+
+## adding routes
+
+to add a new route via the interactive shell:
+
+```
+> add example.com 9000
+```
+
+this command routes `example.com` to port `9000`. the route is also saved to `routes.json`.
+
+## removing routes
+
+to remove an existing route:
+
+```
+> remove example.com
+```
+
+## configuration
 ### routes file
 
 the routes file is a json array of domain-port pairs:
-
 
 ```
 [
@@ -39,11 +66,17 @@ the routes file is a json array of domain-port pairs:
 
 ### custom routes file
 
-specify a custom routes file:
+to specify a custom routes file location at startup:
 
 ```
 $ ./appserve -routes /path/to/your/routes.json
 ```
+
+
+## logging
+
+appserve logs information to the system logger (syslog). ensure you have permissions to write to the syslog.
+
 
 ## license
 
