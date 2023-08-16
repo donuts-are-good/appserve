@@ -1,14 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -100,13 +101,25 @@ func NewRoute(routes map[string]*Proxy, domain string, port string) error {
 	return nil
 }
 
-func main() {
-	newDomain := flag.String("new", "", "Add new domain")
-	newPort := flag.String("port", "", "Port for new domain")
-	routesFile := flag.String("routes", "routes.json", "Routes file")
-	flag.Parse()
+func showHelp() {
+	fmt.Printf(`
 
-	routes, err := LoadRoutes(*routesFile)
+Commands:
+- list: List all of the domain-port mappings.
+- add <domain> <port>: Add a mapping for the domain on the specified port.
+    ex: add example.com 3000  <-- this adds a mapping for example.com to port 9000
+- remove <domain>: Remove a mapping for the domain.
+    ex: remove example.com  <-- this removes example.com
+- help: Show this help.
+- exit: Exit the program.
+
+`)
+}
+
+func main() {
+	routesFile := "routes.json"
+
+	routes, err := LoadRoutes(routesFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			routes = make(map[string]*Proxy)
@@ -117,21 +130,80 @@ func main() {
 
 	var mu sync.RWMutex
 
-	log.Println("routes loaded!")
-	if *newDomain != "" && *newPort != "" {
-		if err := NewRoute(routes, *newDomain, *newPort); err != nil {
-			log.Fatal(err)
+	// Start the HTTP server in a go routine so the interactive prompt can still run
+	go func() {
+		http.HandleFunc("/", Handler(routes, &mu))
+		if err := http.ListenAndServe(":80", nil); err != nil {
+			log.Println(err)
 		}
-		err = SaveRoutes(*routesFile, routes)
-		if err != nil {
-			log.Fatal(err)
+	}()
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Print("> ")
+		if !scanner.Scan() {
+			break
 		}
-		fmt.Println("added new route")
-		return
+
+		line := scanner.Text()
+		args := strings.Fields(line)
+
+		if len(args) == 0 {
+			continue
+		}
+
+		switch args[0] {
+		case "list":
+			for domain, proxy := range routes {
+				fmt.Printf("Domain: %s, Port: %s\n", domain, proxy.Port)
+			}
+
+		case "add":
+			if len(args) != 3 {
+				fmt.Println("Error: Incorrect number of arguments. Expected: add <domain> <port>")
+				continue
+			}
+			if err := NewRoute(routes, args[1], args[2]); err != nil {
+				fmt.Printf("Error: %v\n", err)
+				continue
+			}
+			err = SaveRoutes(routesFile, routes)
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+			} else {
+				fmt.Printf("Added new route for domain: %s on port: %s\n", args[1], args[2])
+			}
+
+		case "remove":
+			if len(args) != 2 {
+				fmt.Println("Error: Incorrect number of arguments. Expected: remove <domain>")
+				continue
+			}
+			domain := args[1]
+			if _, exists := routes[domain]; !exists {
+				fmt.Printf("Error: No such domain: %s\n", domain)
+				continue
+			}
+			delete(routes, domain)
+			err = SaveRoutes(routesFile, routes)
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+			} else {
+				fmt.Printf("Removed route for domain: %s\n", domain)
+			}
+
+		case "help":
+			showHelp()
+
+		case "exit":
+			return
+
+		default:
+			fmt.Println("Error: Unknown command. Type 'help' for available commands.")
+		}
 	}
 
-	http.HandleFunc("/", Handler(routes, &mu))
-	if err := http.ListenAndServe(":80", nil); err != nil {
-		log.Println(err)
+	if err := scanner.Err(); err != nil {
+		log.Printf("Error reading from stdin: %v\n", err)
 	}
 }
