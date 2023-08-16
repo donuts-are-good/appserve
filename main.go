@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/syslog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -26,8 +27,18 @@ type Proxy struct {
 	Port  string
 	Proxy *httputil.ReverseProxy
 }
+type SerializableProxy struct {
+	Port   string `json:"port"`
+	Domain string `json:"domain"`
+}
 
 func main() {
+	logger, err := syslog.NewLogger(syslog.LOG_INFO|syslog.LOG_DAEMON, log.LstdFlags)
+	if err != nil {
+		log.Fatalf("Failed to initialize syslog logger: %v", err)
+		return
+	}
+	log.SetOutput(logger.Writer())
 	routesFile := "routes.json"
 
 	routes, err := LoadRoutes(routesFile)
@@ -94,12 +105,16 @@ func main() {
 			handleHelpCommand()
 		case "exit":
 			if server != nil {
+				log.Println("Initiating server shutdown...")
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				if err := server.Shutdown(ctx); err != nil {
-					log.Println("Server shutdown failed:", err)
+					log.Printf("Server shutdown encountered an error: %v", err)
+				} else {
+					log.Println("Server shutdown successfully.")
 				}
 			}
+			log.Println("Exiting the application.")
 			return
 
 		default:
@@ -113,12 +128,16 @@ func main() {
 }
 
 func LoadRoutes(file string) (map[string]*Proxy, error) {
-	log.Println("Loading routes: " + file)
 	f, err := os.Open(file)
 	if err != nil {
+		log.Printf("Error opening file %s: %v", file, err)
 		return nil, err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			log.Printf("Error closing file %s after reading: %v", file, cerr)
+		}
+	}()
 
 	var routes []DomainRoute
 	d := json.NewDecoder(f)
@@ -144,20 +163,43 @@ func LoadRoutes(file string) (map[string]*Proxy, error) {
 }
 
 func SaveRoutes(file string, routes map[string]*Proxy) error {
-	var drs []DomainRoute
-	for domain, proxy := range routes {
-		drs = append(drs, DomainRoute{Domain: domain, Port: proxy.Port})
+	tempFile := file + ".tmp"
+
+	f, err := os.Create(tempFile)
+	if err != nil {
+		log.Printf("Failed to create temporary file %s: %v", tempFile, err)
+		return err
 	}
 
-	log.Println("updating routes.json...")
-	f, err := os.Create(file)
-	if err != nil {
-		return fmt.Errorf("error creating file %s: %w", file, err)
+	var serializableRoutes []SerializableProxy
+	for domain, proxy := range routes {
+		serializableRoutes = append(serializableRoutes, SerializableProxy{
+			Port:   proxy.Port,
+			Domain: domain,
+		})
 	}
-	defer f.Close()
 
 	e := json.NewEncoder(f)
-	return e.Encode(drs)
+	err = e.Encode(serializableRoutes)
+	if err != nil {
+		log.Printf("Error while encoding JSON: %v", err)
+		f.Close()
+		os.Remove(tempFile)
+		return err
+	}
+
+	if err := f.Close(); err != nil {
+		log.Printf("Error while closing temporary file %s: %v", tempFile, err)
+		os.Remove(tempFile)
+		return err
+	}
+
+	if err := os.Rename(tempFile, file); err != nil {
+		log.Printf("Failed to rename temporary file %s to %s: %v", tempFile, file, err)
+		return err
+	}
+
+	return nil
 }
 
 func NormalizeDomain(domain string) string {
@@ -188,9 +230,6 @@ func NewRoute(routes map[string]*Proxy, domain string, port string, mu *sync.RWM
 		return err
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-
 	routes[domain] = &Proxy{
 		Port:  port,
 		Proxy: httputil.NewSingleHostReverseProxy(target),
@@ -220,22 +259,28 @@ func handleListCommand(routes map[string]*Proxy, mu *sync.RWMutex) {
 	mu.RLock()
 	defer mu.RUnlock()
 	for domain, proxy := range routes {
-		domain = NormalizeDomain(domain)
 		fmt.Printf("Domain: %s, Port: %s\n", domain, proxy.Port)
 	}
 }
 
 func handleAddCommand(routes map[string]*Proxy, domain, port, routesFile string, mu *sync.RWMutex) {
-	if err := NewRoute(routes, domain, port, mu); err != nil {
+	mu.Lock()
+	defer mu.Unlock()
+
+	err := NewRoute(routes, domain, port, mu)
+	if err != nil {
+		fmt.Printf("Error adding route: %v\n", err)
+		return
+	}
+
+	err = SaveRoutes(routesFile, routes)
+	if err != nil {
+		log.Println("Failed to save routes after adding:", err)
 		fmt.Printf("Error: %v\n", err)
 		return
 	}
-	err := SaveRoutes(routesFile, routes)
-	if err != nil {
-		fmt.Printf("Error: %v\n", err)
-	} else {
-		fmt.Printf("Added new route for domain: %s on port: %s\n", domain, port)
-	}
+
+	fmt.Printf("Added new route for domain: %s on port: %s\n", domain, port)
 }
 
 func handleRemoveCommand(routes map[string]*Proxy, domain, routesFile string, mu *sync.RWMutex) {
