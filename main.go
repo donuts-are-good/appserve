@@ -86,11 +86,14 @@ func Handler(routes map[string]*Proxy, mu *sync.RWMutex) http.HandlerFunc {
 	}
 }
 
-func NewRoute(routes map[string]*Proxy, domain string, port string) error {
+func NewRoute(routes map[string]*Proxy, domain string, port string, mu *sync.RWMutex) error {
 	target, err := url.Parse("http://localhost:" + port)
 	if err != nil {
 		return err
 	}
+
+	mu.Lock()
+	defer mu.Unlock()
 
 	routes[domain] = &Proxy{
 		Port:  port,
@@ -98,21 +101,6 @@ func NewRoute(routes map[string]*Proxy, domain string, port string) error {
 	}
 
 	return nil
-}
-
-func showHelp() {
-	fmt.Printf(`
-
-Commands:
-- list: List all of the domain-port mappings.
-- add <domain> <port>: Add a mapping for the domain on the specified port.
-    ex: add example.com 3000  <-- this adds a mapping for example.com to port 9000
-- remove <domain>: Remove a mapping for the domain.
-    ex: remove example.com  <-- this removes example.com
-- help: Show this help.
-- exit: Exit the program.
-
-`)
 }
 
 func main() {
@@ -152,16 +140,18 @@ func main() {
 
 		switch args[0] {
 		case "list":
+			mu.RLock()
 			for domain, proxy := range routes {
 				fmt.Printf("Domain: %s, Port: %s\n", domain, proxy.Port)
 			}
+			mu.RUnlock()
 
 		case "add":
 			if len(args) != 3 {
 				fmt.Println("Error: Incorrect number of arguments. Expected: add <domain> <port>")
 				continue
 			}
-			if err := NewRoute(routes, args[1], args[2]); err != nil {
+			if err := NewRoute(routes, args[1], args[2], &mu); err != nil {
 				fmt.Printf("Error: %v\n", err)
 				continue
 			}
@@ -178,11 +168,16 @@ func main() {
 				continue
 			}
 			domain := args[1]
+
+			mu.Lock()
 			if _, exists := routes[domain]; !exists {
 				fmt.Printf("Error: No such domain: %s\n", domain)
+				mu.Unlock()
 				continue
 			}
 			delete(routes, domain)
+			mu.Unlock()
+
 			err = SaveRoutes(routesFile, routes)
 			if err != nil {
 				fmt.Printf("Error: %v\n", err)
@@ -191,33 +186,37 @@ func main() {
 			}
 
 		case "save":
-			if len(args) != 2 {
-				fmt.Println("Error: Incorrect number of arguments. Expected: save /path/to/routes.json")
+			if len(args) > 2 {
+				fmt.Println("Error: Incorrect number of arguments. Expected: save [filepath]")
 				continue
 			}
-			err = SaveRoutes(args[1], routes)
+			if len(args) == 2 {
+				routesFile = args[1]
+			}
+			err = SaveRoutes(routesFile, routes)
 			if err != nil {
 				fmt.Printf("Error: %v\n", err)
 			} else {
-				fmt.Printf("Routes saved to: %s\n", args[1])
-				routesFile = args[1]
+				fmt.Printf("Routes saved to: %s\n", routesFile)
 			}
 
 		case "load":
-			if len(args) != 2 {
-				fmt.Println("Error: Incorrect number of arguments. Expected: load /path/to/routes.json")
+			if len(args) > 2 {
+				fmt.Println("Error: Incorrect number of arguments. Expected: load [filepath]")
 				continue
 			}
-			routes, err = LoadRoutes(args[1])
+			if len(args) == 2 {
+				routesFile = args[1]
+			}
+			routes, err = LoadRoutes(routesFile)
 			if err != nil {
 				if os.IsNotExist(err) {
-					fmt.Printf("Error: No such file: %s\n", args[1])
+					fmt.Printf("Error: No such file: %s\n", routesFile)
 				} else {
 					fmt.Printf("Error: %v\n", err)
 				}
 			} else {
-				fmt.Printf("Routes loaded from: %s\n", args[1])
-				routesFile = args[1]
+				fmt.Printf("Routes loaded from: %s\n", routesFile)
 			}
 		case "help":
 			showHelp()
@@ -233,4 +232,21 @@ func main() {
 	if err := scanner.Err(); err != nil {
 		log.Printf("Error reading from stdin: %v\n", err)
 	}
+}
+
+func showHelp() {
+	fmt.Printf(`
+
+Commands:
+- list: List all of the domain-port mappings.
+- add <domain> <port>: Add a mapping for the domain on the specified port.
+    ex: add example.com 3000
+- remove <domain>: Remove a mapping for the domain.
+    ex: remove example.com
+- save [filepath]: Save the routes to the specified filepath or default path if not specified.
+- load [filepath]: Load routes from the specified filepath or default path if not specified.
+- help: Show this help.
+- exit: Exit the program.
+
+`)
 }
