@@ -16,7 +16,12 @@ import (
 	"time"
 )
 
-var server *http.Server
+type App struct {
+	Server     *http.Server
+	Routes     map[string]*Proxy
+	RoutesFile string
+	Mu         sync.RWMutex
+}
 
 type DomainRoute struct {
 	Domain string `json:"domain"`
@@ -41,28 +46,21 @@ func main() {
 	log.SetOutput(logger.Writer())
 	routesFile := "routes.json"
 
-	routes, err := LoadRoutes(routesFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			routes = make(map[string]*Proxy)
-		} else {
-			log.Fatal(err)
-		}
+	app := &App{
+		Routes:     make(map[string]*Proxy),
+		RoutesFile: routesFile,
 	}
 
-	var mu sync.RWMutex
-
-	go func() {
-		http.HandleFunc("/", Handler(routes, &mu))
-		server = &http.Server{Addr: ":80", Handler: nil}
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			if strings.Contains(err.Error(), "address already in use") {
-				log.Fatalf("Port 80 is already in use. Please make sure no other services are running on this port.")
-			} else {
-				log.Fatalf("Failed to start server: %v", err)
-			}
+	loadedRoutes, err := LoadRoutes(routesFile)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Fatal(err)
 		}
-	}()
+	} else {
+		app.Routes = loadedRoutes
+	}
+
+	go app.startServer()
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -80,35 +78,31 @@ func main() {
 
 		switch args[0] {
 		case "list":
-			handleListCommand(routes, &mu)
+			app.handleListCommand()
 		case "add":
 			if len(args) != 3 {
 				fmt.Println("Error: Incorrect number of arguments. Expected: add <domain> <port>")
 				continue
 			}
-			handleAddCommand(routes, args[1], args[2], routesFile, &mu)
-
+			app.handleAddCommand(args[1], args[2])
 		case "remove":
 			if len(args) != 2 {
 				fmt.Println("Error: Incorrect number of arguments. Expected: remove <domain>")
 				continue
 			}
-			handleRemoveCommand(routes, NormalizeDomain(args[1]), routesFile, &mu)
+			app.handleRemoveCommand(NormalizeDomain(args[1]))
 		case "save":
-			handleSaveCommand(routes, routesFile)
+			app.handleSaveCommand()
 		case "load":
-			newRoutes, err := handleLoadCommand(routesFile)
-			if err == nil {
-				routes = newRoutes
-			}
+			app.handleLoadCommand()
 		case "help":
 			handleHelpCommand()
 		case "exit":
-			if server != nil {
+			if app.Server != nil {
 				log.Println("Initiating server shutdown...")
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				if err := server.Shutdown(ctx); err != nil {
+				if err := app.Server.Shutdown(ctx); err != nil {
 					log.Printf("Server shutdown encountered an error: %v", err)
 				} else {
 					log.Println("Server shutdown successfully.")
@@ -124,6 +118,18 @@ func main() {
 
 	if err := scanner.Err(); err != nil {
 		log.Printf("Error reading from stdin: %v\n", err)
+	}
+}
+
+func (app *App) startServer() {
+	http.HandleFunc("/", app.Handler())
+	app.Server = &http.Server{Addr: ":80", Handler: nil}
+	if err := app.Server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if strings.Contains(err.Error(), "address already in use") {
+			log.Fatalf("Port 80 is already in use. Please make sure no other services are running on this port.")
+		} else {
+			log.Fatalf("Failed to start server: %v", err)
+		}
 	}
 }
 
@@ -145,18 +151,25 @@ func LoadRoutes(file string) (map[string]*Proxy, error) {
 		return nil, fmt.Errorf("error decoding JSON from file %s: %w", file, err)
 	}
 
+	var failedRoutes int
 	rp := make(map[string]*Proxy)
 	for _, route := range routes {
 		route.Domain = NormalizeDomain(route.Domain)
 		log.Println("-> route found: " + route.Domain + ":" + route.Port)
 		target, err := url.Parse("http://localhost:" + route.Port)
 		if err != nil {
-			return nil, fmt.Errorf("error parsing URL for domain %s: %w", route.Domain, err)
+			log.Printf("Error parsing URL for domain %s: %v. Skipping this route.", route.Domain, err)
+			failedRoutes++
+			continue
 		}
 		rp[route.Domain] = &Proxy{
 			Port:  route.Port,
 			Proxy: httputil.NewSingleHostReverseProxy(target),
 		}
+	}
+
+	if failedRoutes > 0 {
+		log.Printf("%d routes failed to load due to errors.", failedRoutes)
 	}
 
 	return rp, nil
@@ -206,15 +219,14 @@ func NormalizeDomain(domain string) string {
 	return strings.TrimPrefix(strings.ToLower(domain), "www.")
 }
 
-func Handler(routes map[string]*Proxy, mu *sync.RWMutex) http.HandlerFunc {
-
+func (app *App) Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		mu.RLock()
-		defer mu.RUnlock()
+		app.Mu.RLock()
+		defer app.Mu.RUnlock()
 
 		domain := NormalizeDomain(r.Host)
-		if route, found := routes[domain]; found {
-			fmt.Println("hit: ", domain, routes[domain])
+		if route, found := app.Routes[domain]; found {
+			fmt.Println("hit: ", domain, app.Routes[domain])
 			route.Proxy.ServeHTTP(w, r)
 		} else {
 			http.Error(w, "Not found", http.StatusNotFound)
@@ -255,25 +267,26 @@ Commands:
 `)
 }
 
-func handleListCommand(routes map[string]*Proxy, mu *sync.RWMutex) {
-	mu.RLock()
-	defer mu.RUnlock()
-	for domain, proxy := range routes {
+func (app *App) handleListCommand() {
+	app.Mu.RLock()
+	defer app.Mu.RUnlock()
+	for domain, proxy := range app.Routes {
 		fmt.Printf("Domain: %s, Port: %s\n", domain, proxy.Port)
 	}
 }
 
-func handleAddCommand(routes map[string]*Proxy, domain, port, routesFile string, mu *sync.RWMutex) {
-	mu.Lock()
-	defer mu.Unlock()
+func (app *App) handleAddCommand(domain, port string) {
+	app.Mu.Lock()
+	defer app.Mu.Unlock()
 
-	err := NewRoute(routes, domain, port, mu)
+	err := NewRoute(app.Routes, domain, port, &app.Mu)
+
 	if err != nil {
 		fmt.Printf("Error adding route: %v\n", err)
 		return
 	}
 
-	err = SaveRoutes(routesFile, routes)
+	err = SaveRoutes(app.RoutesFile, app.Routes)
 	if err != nil {
 		log.Println("Failed to save routes after adding:", err)
 		fmt.Printf("Error: %v\n", err)
@@ -283,15 +296,15 @@ func handleAddCommand(routes map[string]*Proxy, domain, port, routesFile string,
 	fmt.Printf("Added new route for domain: %s on port: %s\n", domain, port)
 }
 
-func handleRemoveCommand(routes map[string]*Proxy, domain, routesFile string, mu *sync.RWMutex) {
-	mu.Lock()
-	defer mu.Unlock()
-	if _, exists := routes[domain]; !exists {
+func (app *App) handleRemoveCommand(domain string) {
+	app.Mu.Lock()
+	defer app.Mu.Unlock()
+	if _, exists := app.Routes[domain]; !exists {
 		fmt.Printf("Error: No such domain: %s\n", domain)
 		return
 	}
-	delete(routes, domain)
-	err := SaveRoutes(routesFile, routes)
+	delete(app.Routes, domain)
+	err := SaveRoutes(app.RoutesFile, app.Routes)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 	} else {
@@ -299,26 +312,29 @@ func handleRemoveCommand(routes map[string]*Proxy, domain, routesFile string, mu
 	}
 }
 
-func handleSaveCommand(routes map[string]*Proxy, routesFile string) {
-	err := SaveRoutes(routesFile, routes)
+func (app *App) handleSaveCommand() {
+	err := SaveRoutes(app.RoutesFile, app.Routes)
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 	} else {
-		fmt.Printf("Routes saved to: %s\n", routesFile)
+		fmt.Printf("Routes saved to: %s\n", app.RoutesFile)
 	}
 }
 
-func handleLoadCommand(routesFile string) (map[string]*Proxy, error) {
-	routes, err := LoadRoutes(routesFile)
+func (app *App) handleLoadCommand() error {
+	routes, err := LoadRoutes(app.RoutesFile)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Printf("Error: No such file: %s\n", routesFile)
-			return nil, err
+			fmt.Printf("Error: No such file: %s\n", app.RoutesFile)
+			return err
 		} else {
 			fmt.Printf("Error: %v\n", err)
-			return nil, err
+			return err
 		}
 	}
-	fmt.Printf("Routes loaded from: %s\n", routesFile)
-	return routes, nil
+	fmt.Printf("Routes loaded from: %s\n", app.RoutesFile)
+	app.Mu.Lock()
+	app.Routes = routes
+	app.Mu.Unlock()
+	return nil
 }
