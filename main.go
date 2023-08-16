@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,7 +12,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
+
+var server *http.Server
 
 type DomainRoute struct {
 	Domain string `json:"domain"`
@@ -34,16 +38,16 @@ func LoadRoutes(file string) (map[string]*Proxy, error) {
 	var routes []DomainRoute
 	d := json.NewDecoder(f)
 	if err := d.Decode(&routes); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error decoding JSON from file %s: %w", file, err)
 	}
 
 	rp := make(map[string]*Proxy)
 	for _, route := range routes {
+		route.Domain = normalizeDomain(route.Domain)
 		log.Println("-> route found: " + route.Domain + ":" + route.Port)
 		target, err := url.Parse("http://localhost:" + route.Port)
 		if err != nil {
-			log.Println("error: " + err.Error())
-			return nil, err
+			return nil, fmt.Errorf("error parsing URL for domain %s: %w", route.Domain, err)
 		}
 		rp[route.Domain] = &Proxy{
 			Port:  route.Port,
@@ -63,7 +67,7 @@ func SaveRoutes(file string, routes map[string]*Proxy) error {
 	log.Println("updating routes.json...")
 	f, err := os.Create(file)
 	if err != nil {
-		return err
+		return fmt.Errorf("error creating file %s: %w", file, err)
 	}
 	defer f.Close()
 
@@ -71,12 +75,17 @@ func SaveRoutes(file string, routes map[string]*Proxy) error {
 	return e.Encode(drs)
 }
 
+func normalizeDomain(domain string) string {
+	return strings.ToLower(domain)
+}
+
 func Handler(routes map[string]*Proxy, mu *sync.RWMutex) http.HandlerFunc {
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		mu.RLock()
 		defer mu.RUnlock()
 
-		domain := r.Host
+		domain := normalizeDomain(r.Host)
 		if route, found := routes[domain]; found {
 			fmt.Println("hit: ", domain, routes[domain])
 			route.Proxy.ServeHTTP(w, r)
@@ -87,6 +96,8 @@ func Handler(routes map[string]*Proxy, mu *sync.RWMutex) http.HandlerFunc {
 }
 
 func NewRoute(routes map[string]*Proxy, domain string, port string, mu *sync.RWMutex) error {
+	domain = normalizeDomain(domain)
+
 	target, err := url.Parse("http://localhost:" + port)
 	if err != nil {
 		return err
@@ -119,7 +130,8 @@ func main() {
 
 	go func() {
 		http.HandleFunc("/", Handler(routes, &mu))
-		if err := http.ListenAndServe(":80", nil); err != nil {
+		server = &http.Server{Addr: ":80", Handler: nil}
+		if err := server.ListenAndServe(); err != http.ErrServerClosed {
 			log.Println(err)
 		}
 	}()
@@ -142,6 +154,8 @@ func main() {
 		case "list":
 			mu.RLock()
 			for domain, proxy := range routes {
+				domain = normalizeDomain(domain)
+
 				fmt.Printf("Domain: %s, Port: %s\n", domain, proxy.Port)
 			}
 			mu.RUnlock()
@@ -167,7 +181,7 @@ func main() {
 				fmt.Println("Error: Incorrect number of arguments. Expected: remove <domain>")
 				continue
 			}
-			domain := args[1]
+			domain := normalizeDomain(args[1])
 
 			mu.Lock()
 			if _, exists := routes[domain]; !exists {
@@ -222,6 +236,13 @@ func main() {
 			showHelp()
 
 		case "exit":
+			if server != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := server.Shutdown(ctx); err != nil {
+					log.Println("Server shutdown failed:", err)
+				}
+			}
 			return
 
 		default:
