@@ -13,7 +13,6 @@ import (
 	"sync"
 )
 
-// DomainRoute represents a domain and its corresponding port
 type DomainRoute struct {
 	Domain string `json:"domain"`
 	Port   string `json:"port"`
@@ -130,7 +129,6 @@ func main() {
 
 	var mu sync.RWMutex
 
-	// Start the HTTP server in a go routine so the interactive prompt can still run
 	go func() {
 		http.HandleFunc("/", Handler(routes, &mu))
 		if err := http.ListenAndServe(":80", nil); err != nil {
@@ -192,6 +190,35 @@ func main() {
 				fmt.Printf("Removed route for domain: %s\n", domain)
 			}
 
+		case "save":
+			if len(args) != 2 {
+				fmt.Println("Error: Incorrect number of arguments. Expected: save /path/to/routes.json")
+				continue
+			}
+			err = SaveRoutes(args[1], routes)
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+			} else {
+				fmt.Printf("Routes saved to: %s\n", args[1])
+				routesFile = args[1]
+			}
+
+		case "load":
+			if len(args) != 2 {
+				fmt.Println("Error: Incorrect number of arguments. Expected: load /path/to/routes.json")
+				continue
+			}
+			routes, err = LoadRoutes(args[1])
+			if err != nil {
+				if os.IsNotExist(err) {
+					fmt.Printf("Error: No such file: %s\n", args[1])
+				} else {
+					fmt.Printf("Error: %v\n", err)
+				}
+			} else {
+				fmt.Printf("Routes loaded from: %s\n", args[1])
+				routesFile = args[1]
+			}
 		case "help":
 			showHelp()
 
