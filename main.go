@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/acme/autocert"
 )
 
 type App struct {
@@ -122,15 +124,36 @@ func main() {
 }
 
 func (app *App) startServer() {
-	http.HandleFunc("/", app.Handler())
-	app.Server = &http.Server{Addr: ":80", Handler: nil}
-	if err := app.Server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		if strings.Contains(err.Error(), "address already in use") {
-			log.Fatalf("Port 80 is already in use. Please make sure no other services are running on this port.")
-		} else {
-			log.Fatalf("Failed to start server: %v", err)
-		}
+	certManager := autocert.Manager{
+		Prompt:     autocert.AcceptTOS,
+		HostPolicy: autocert.HostWhitelist(app.getAllDomains()...), // Define your domain list here
+		Cache:      autocert.DirCache("tls"),                       // Store certificates in the "tls" directory
 	}
+
+	server := &http.Server{
+		Addr:      ":https",
+		TLSConfig: certManager.TLSConfig(),
+		Handler:   http.HandlerFunc(app.Handler()),
+	}
+
+	go func() {
+		http.HandleFunc("/", app.Handler())
+		// Serve on HTTP to satisfy the ACME HTTP-01 challenge and then redirect to HTTPS.
+		log.Fatal(http.ListenAndServe(":http", certManager.HTTPHandler(nil)))
+	}()
+
+	log.Fatal(server.ListenAndServeTLS("", ""))
+}
+
+func (app *App) getAllDomains() []string {
+	app.Mu.RLock()
+	defer app.Mu.RUnlock()
+
+	domains := make([]string, 0, len(app.Routes))
+	for domain := range app.Routes {
+		domains = append(domains, domain)
+	}
+	return domains
 }
 
 func LoadRoutes(file string) (map[string]*Proxy, error) {
