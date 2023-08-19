@@ -3,7 +3,7 @@
 
 # appserve
 
-appserve is a reverse proxy server in go. it routes requests based on domain to specified ports.
+appserve is a reverse proxy server in go with automatic https. it routes requests based on domain to specified ports.
 
 
 ## usage
