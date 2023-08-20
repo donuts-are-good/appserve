@@ -245,15 +245,25 @@ func NormalizeDomain(domain string) string {
 func (app *App) Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		app.Mu.RLock()
-		defer app.Mu.RUnlock()
-
 		domain := NormalizeDomain(r.Host)
-		if route, found := app.Routes[domain]; found {
-			fmt.Println("hit: ", domain, app.Routes[domain])
-			route.Proxy.ServeHTTP(w, r)
-		} else {
+		route, found := app.Routes[domain]
+		app.Mu.RUnlock()
+
+		if !found {
 			http.Error(w, "Not found", http.StatusNotFound)
+			return
 		}
+
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		route.Proxy.ServeHTTP(w, r)
 	}
 }
 
