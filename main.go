@@ -40,6 +40,8 @@ type SerializableProxy struct {
 }
 
 func main() {
+
+	// setting up the logger
 	logger, err := syslog.NewLogger(syslog.LOG_INFO|syslog.LOG_DAEMON, log.LstdFlags)
 	if err != nil {
 		log.Fatalf("Failed to initialize syslog logger: %v", err)
@@ -48,11 +50,15 @@ func main() {
 	log.SetOutput(logger.Writer())
 	routesFile := "routes.json"
 
+
+	// initializing a new app object
 	app := &App{
 		Routes:     make(map[string]*Proxy),
 		RoutesFile: routesFile,
 	}
 
+
+	// load the routes we have already
 	loadedRoutes, err := LoadRoutes(routesFile)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -62,8 +68,12 @@ func main() {
 		app.Routes = loadedRoutes
 	}
 
+
+	// start the server in a goroutine
 	go app.startServer()
 
+
+	// start accepting input from the user interactively
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("> ")
@@ -78,6 +88,7 @@ func main() {
 			continue
 		}
 
+		// command handlers for the various things a user might do
 		switch args[0] {
 		case "list":
 			app.handleListCommand()
@@ -123,6 +134,8 @@ func main() {
 	}
 }
 
+
+// startServer sets up cerManager and an https api using a goroutine.
 func (app *App) startServer() {
 	certManager := autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
@@ -145,6 +158,7 @@ func (app *App) startServer() {
 	log.Fatal(server.ListenAndServeTLS("", ""))
 }
 
+// getAllDomains will make a list of all the routes for domains and apps
 func (app *App) getAllDomains() []string {
 	app.Mu.RLock()
 	defer app.Mu.RUnlock()
@@ -156,7 +170,11 @@ func (app *App) getAllDomains() []string {
 	return domains
 }
 
+
+// LoadRoutes will open the config file and add the routes found.
 func LoadRoutes(file string) (map[string]*Proxy, error) {
+
+	// open the file
 	f, err := os.Open(file)
 	if err != nil {
 		log.Printf("Error opening file %s: %v", file, err)
@@ -168,15 +186,21 @@ func LoadRoutes(file string) (map[string]*Proxy, error) {
 		}
 	}()
 
+
+	// read the file
 	var routes []DomainRoute
 	d := json.NewDecoder(f)
 	if err := d.Decode(&routes); err != nil {
 		return nil, fmt.Errorf("error decoding JSON from file %s: %w", file, err)
 	}
 
+
+	// make the routes
 	var failedRoutes int
 	rp := make(map[string]*Proxy)
 	for _, route := range routes {
+
+		// normalize the domains for dev sanity and wasted weekends
 		route.Domain = NormalizeDomain(route.Domain)
 		log.Println("-> route found: " + route.Domain + ":" + route.Port)
 		target, err := url.Parse("http://localhost:" + route.Port)
@@ -185,12 +209,15 @@ func LoadRoutes(file string) (map[string]*Proxy, error) {
 			failedRoutes++
 			continue
 		}
+
+		// create our proxy
 		rp[route.Domain] = &Proxy{
 			Port:  route.Port,
 			Proxy: httputil.NewSingleHostReverseProxy(target),
 		}
 	}
 
+	// else
 	if failedRoutes > 0 {
 		log.Printf("%d routes failed to load due to errors.", failedRoutes)
 	}
@@ -198,9 +225,17 @@ func LoadRoutes(file string) (map[string]*Proxy, error) {
 	return rp, nil
 }
 
+// SaveRoutes will create and write to a config file using json
 func SaveRoutes(file string, routes map[string]*Proxy) error {
+
+	// in this function we use a temporary file as a way of not clobbering 
+	// a good config with incomplete new data like if the process fails of 
+	// creating the new incoming config or if something else fails. this 
+	// way we dont write a bunch of bs to the config that we have in hand.
 	tempFile := file + ".tmp"
 
+
+	// create the temporary file
 	f, err := os.Create(tempFile)
 	if err != nil {
 		log.Printf("Failed to create temporary file %s: %v", tempFile, err)
@@ -215,6 +250,7 @@ func SaveRoutes(file string, routes map[string]*Proxy) error {
 		})
 	}
 
+	// make the json with our routes
 	e := json.NewEncoder(f)
 	err = e.Encode(serializableRoutes)
 	if err != nil {
@@ -224,12 +260,15 @@ func SaveRoutes(file string, routes map[string]*Proxy) error {
 		return err
 	}
 
+	// close the temp file
 	if err := f.Close(); err != nil {
 		log.Printf("Error while closing temporary file %s: %v", tempFile, err)
 		os.Remove(tempFile)
 		return err
 	}
 
+
+	// pinnochio.gif
 	if err := os.Rename(tempFile, file); err != nil {
 		log.Printf("Failed to rename temporary file %s to %s: %v", tempFile, file, err)
 		return err
@@ -238,10 +277,14 @@ func SaveRoutes(file string, routes map[string]*Proxy) error {
 	return nil
 }
 
+
+// NormalizeDomain will solve all of your problems but it won't bring your weekend back.
 func NormalizeDomain(domain string) string {
 	return strings.TrimPrefix(strings.ToLower(domain), "www.")
 }
 
+
+// Handler will receive an http request and route it appropriately
 func (app *App) Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		app.Mu.RLock()
@@ -254,6 +297,8 @@ func (app *App) Handler() http.HandlerFunc {
 			return
 		}
 
+
+		// why do we even have this if we all *
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
 		if r.Method == http.MethodOptions {
@@ -267,6 +312,8 @@ func (app *App) Handler() http.HandlerFunc {
 	}
 }
 
+
+// NewRoute should probably be part of Handler tbh
 func NewRoute(routes map[string]*Proxy, domain string, port string, mu *sync.RWMutex) error {
 	domain = NormalizeDomain(domain)
 
