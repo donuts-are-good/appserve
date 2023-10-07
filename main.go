@@ -137,10 +137,23 @@ func main() {
 
 // startServer sets up cerManager and an https api using a goroutine.
 func (app *App) startServer() {
+	// certManager := autocert.Manager{
+	// 	Prompt:     autocert.AcceptTOS,
+	// 	HostPolicy: autocert.HostWhitelist(app.getAllDomains()...),
+	// 	Cache:      autocert.DirCache("tls"),
+	// }
+
 	certManager := autocert.Manager{
-		Prompt:     autocert.AcceptTOS,
-		HostPolicy: autocert.HostWhitelist(app.getAllDomains()...), // Define your domain list here
-		Cache:      autocert.DirCache("tls"),                       // Store certificates in the "tls" directory
+		Prompt: autocert.AcceptTOS,
+		HostPolicy: func(ctx context.Context, host string) error {
+			app.Mu.RLock()
+			defer app.Mu.RUnlock()
+			if _, ok := app.Routes[host]; ok {
+				return nil
+			}
+			return fmt.Errorf("acme/autocert: host %q not configured in HostPolicy", host)
+		},
+		Cache: autocert.DirCache("tls"),
 	}
 
 	server := &http.Server{
