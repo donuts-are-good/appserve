@@ -50,13 +50,11 @@ func main() {
 	log.SetOutput(logger.Writer())
 	routesFile := "routes.json"
 
-
 	// initializing a new app object
 	app := &App{
 		Routes:     make(map[string]*Proxy),
 		RoutesFile: routesFile,
 	}
-
 
 	// load the routes we have already
 	loadedRoutes, err := LoadRoutes(routesFile)
@@ -68,10 +66,8 @@ func main() {
 		app.Routes = loadedRoutes
 	}
 
-
 	// start the server in a goroutine
 	go app.startServer()
-
 
 	// start accepting input from the user interactively
 	scanner := bufio.NewScanner(os.Stdin)
@@ -134,14 +130,8 @@ func main() {
 	}
 }
 
-
 // startServer sets up cerManager and an https api using a goroutine.
 func (app *App) startServer() {
-	// certManager := autocert.Manager{
-	// 	Prompt:     autocert.AcceptTOS,
-	// 	HostPolicy: autocert.HostWhitelist(app.getAllDomains()...),
-	// 	Cache:      autocert.DirCache("tls"),
-	// }
 
 	certManager := autocert.Manager{
 		Prompt: autocert.AcceptTOS,
@@ -183,7 +173,6 @@ func (app *App) getAllDomains() []string {
 	return domains
 }
 
-
 // LoadRoutes will open the config file and add the routes found.
 func LoadRoutes(file string) (map[string]*Proxy, error) {
 
@@ -199,14 +188,12 @@ func LoadRoutes(file string) (map[string]*Proxy, error) {
 		}
 	}()
 
-
 	// read the file
 	var routes []DomainRoute
 	d := json.NewDecoder(f)
 	if err := d.Decode(&routes); err != nil {
 		return nil, fmt.Errorf("error decoding JSON from file %s: %w", file, err)
 	}
-
 
 	// make the routes
 	var failedRoutes int
@@ -241,12 +228,11 @@ func LoadRoutes(file string) (map[string]*Proxy, error) {
 // SaveRoutes will create and write to a config file using json
 func SaveRoutes(file string, routes map[string]*Proxy) error {
 
-	// in this function we use a temporary file as a way of not clobbering 
-	// a good config with incomplete new data like if the process fails of 
-	// creating the new incoming config or if something else fails. this 
+	// in this function we use a temporary file as a way of not clobbering
+	// a good config with incomplete new data like if the process fails of
+	// creating the new incoming config or if something else fails. this
 	// way we dont write a bunch of bs to the config that we have in hand.
 	tempFile := file + ".tmp"
-
 
 	// create the temporary file
 	f, err := os.Create(tempFile)
@@ -280,7 +266,6 @@ func SaveRoutes(file string, routes map[string]*Proxy) error {
 		return err
 	}
 
-
 	// pinnochio.gif
 	if err := os.Rename(tempFile, file); err != nil {
 		log.Printf("Failed to rename temporary file %s to %s: %v", tempFile, file, err)
@@ -290,12 +275,10 @@ func SaveRoutes(file string, routes map[string]*Proxy) error {
 	return nil
 }
 
-
 // NormalizeDomain will solve all of your problems but it won't bring your weekend back.
 func NormalizeDomain(domain string) string {
 	return strings.TrimPrefix(strings.ToLower(domain), "www.")
 }
-
 
 // Handler will receive an http request and route it appropriately
 func (app *App) Handler() http.HandlerFunc {
@@ -310,7 +293,6 @@ func (app *App) Handler() http.HandlerFunc {
 			return
 		}
 
-
 		// why do we even have this if we all *
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -324,7 +306,6 @@ func (app *App) Handler() http.HandlerFunc {
 		route.Proxy.ServeHTTP(w, r)
 	}
 }
-
 
 // NewRoute should probably be part of Handler tbh
 func NewRoute(routes map[string]*Proxy, domain string, port string, mu *sync.RWMutex) error {
